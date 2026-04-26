@@ -112,6 +112,20 @@ Run smoke tests:
 make test
 ```
 
+Run live OpenAI generation integration tests:
+
+```bash
+OPENAI_API_KEY="your-key" make test-integration
+```
+
+The integration test calls `gpt-5-nano` through the same generation helpers as the Worker, validates JSON mode output, and confirms generated UI uses only whitelisted planner primitives. Do not commit API keys; use environment variables or `wrangler secret put OPENAI_API_KEY`.
+
+Run smoke tests plus live integration tests:
+
+```bash
+OPENAI_API_KEY="your-key" make test-all
+```
+
 Deploy frontend assets and Worker:
 
 ```bash

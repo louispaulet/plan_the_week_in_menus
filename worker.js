@@ -295,8 +295,11 @@ async function replaceWarnings(env, planId, warnings) {
   }
 }
 
-async function callOpenAI(env, prompt, fallback) {
-  if (!env.OPENAI_API_KEY) return fallback;
+export async function callOpenAI(env, prompt, fallback, options = {}) {
+  if (!env.OPENAI_API_KEY) {
+    if (options.throwOnError) throw new Error("OPENAI_API_KEY is required");
+    return fallback;
+  }
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -313,16 +316,26 @@ async function callOpenAI(env, prompt, fallback) {
         text: { format: { type: "json_object" } },
       }),
     });
-    if (!response.ok) return fallback;
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (options.throwOnError) throw new Error(`OpenAI request failed: ${response.status} ${errorText}`);
+      return fallback;
+    }
     const data = await response.json();
-    const text = data.output_text || data.output?.flatMap((item) => item.content || []).find((content) => content.type === "output_text")?.text;
+    const text = extractOutputText(data);
+    if (!text && options.throwOnError) throw new Error("OpenAI response did not include output text");
     return text ? JSON.parse(text) : fallback;
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return fallback;
   }
 }
 
-function buildSuggestionPrompt({ plan, rules, day, slot }) {
+function extractOutputText(data) {
+  return data.output_text || data.output?.flatMap((item) => item.content || []).find((content) => content.type === "output_text")?.text;
+}
+
+export function buildSuggestionPrompt({ plan, rules, day, slot }) {
   return {
     system:
       "You are a menu planning engine. Return strict JSON only. Do not return markdown or chat prose. Use only known UI components: choice_buttons, meal_cards, rule_warning_cards, form_fields, ingredient_chips, schedule_patch, preference_block, next_step_panel. Prefer exactly 3 or 4 meal choices. Every warning must include actionable choices.",
@@ -337,7 +350,7 @@ function buildSuggestionPrompt({ plan, rules, day, slot }) {
   };
 }
 
-function buildRuleNormalizePrompt(text) {
+export function buildRuleNormalizePrompt(text) {
   return {
     system:
       "Normalize a menu planning rule. Return strict JSON only with keys: name, severity, scope, tags, structured. severity must be hard, soft, or warning. scope must be global, day, meal, ingredient, dish, or shopping_list.",
@@ -412,7 +425,7 @@ function makeWarning(rule, day, slot, title, message) {
   };
 }
 
-function fallbackSuggestions(day, slot) {
+export function fallbackSuggestions(day, slot) {
   const meals = [
     {
       id: `generated_${day}_${slot}_salmon`,
@@ -472,7 +485,7 @@ function fallbackSuggestions(day, slot) {
   };
 }
 
-function fallbackNormalizedRule(text) {
+export function fallbackNormalizedRule(text) {
   const lower = text.toLowerCase();
   return {
     name: lower.includes("low carb") ? "Low carb" : text.split(/[.!?]/)[0].slice(0, 42) || "Planning rule",
@@ -531,7 +544,7 @@ function sanitizePlan(plan) {
   return clean;
 }
 
-function emptyPlan() {
+export function emptyPlan() {
   return DAYS.reduce((plan, day) => {
     plan[day] = { lunch: null, dinner: null };
     return plan;
