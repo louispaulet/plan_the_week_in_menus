@@ -1,4 +1,4 @@
-.PHONY: install up worker worker-clean build test test-integration test-all api-toy-check api-parallel-probe db-create db-migrate-local db-migrate-remote deploy status
+.PHONY: install up worker worker-clean build test test-integration test-all api-toy-check api-parallel-probe db-create db-migrate-local db-migrate-remote deploy-pages deploy-worker deploy status
 
 install:
 	npm install
@@ -41,8 +41,13 @@ db-migrate-local:
 db-migrate-remote:
 	npm run db:migrate:remote
 
-deploy:
-	npm run deploy
+deploy-pages:
+	npm run deploy:pages
+
+deploy-worker:
+	npm run deploy:worker
+
+deploy: deploy-pages deploy-worker
 
 status:
 	npm run status

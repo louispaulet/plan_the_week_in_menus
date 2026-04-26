@@ -10,5 +10,5 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "week-menu-planner"
-database_id = "replace-with-cloudflare-d1-database-id"
+database_id = "f38ed43d-a134-4607-bf8a-9ee8c536c913"
 migrations_dir = "migrations"

@@ -159,22 +159,33 @@ Run smoke tests plus live integration tests:
 make test-all
 ```
 
-Deploy frontend assets and Worker:
+Deploy frontend and Worker:
 
 ```bash
 make deploy
 ```
 
-`make deploy` publishes the Vite frontend to GitHub Pages through the `gh-pages` branch.
+`make deploy` publishes the Vite frontend to GitHub Pages through the `gh-pages` branch, then deploys the Cloudflare Worker with Wrangler.
 
-Equivalent raw command:
+Deploy only the GitHub Pages frontend:
 
 ```bash
-GITHUB_PAGES=true npm run build
-node scripts/deploy-gh-pages.mjs
+make deploy-pages
 ```
 
-Deploy the Cloudflare Worker separately:
+Equivalent raw frontend command:
+
+```bash
+npm run deploy:pages
+```
+
+Deploy only the Cloudflare Worker:
+
+```bash
+make deploy-worker
+```
+
+Equivalent raw Worker command:
 
 ```bash
 npm run deploy:cloudflare
