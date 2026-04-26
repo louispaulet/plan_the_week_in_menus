@@ -136,6 +136,14 @@ make api-toy-check
 
 This reads `OPENAI_API_KEY` from `.env`, calls the Responses API with a toy JSON-mode prompt, and prints duration plus a single recipe name. Use this when you want to separate key/API syntax issues from Worker, D1, or frontend behavior.
 
+Measure the parallel meal-name strategy:
+
+```bash
+make api-parallel-probe
+```
+
+This sends six small meal-name requests in parallel, keeps the first three valid names, then sends three description requests in parallel for those names. Use it to compare latency against the current one-large-planner-response approach.
+
 Run smoke tests plus live integration tests:
 
 ```bash
