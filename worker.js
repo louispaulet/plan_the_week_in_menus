@@ -338,14 +338,37 @@ function extractOutputText(data) {
 export function buildSuggestionPrompt({ plan, rules, day, slot }) {
   return {
     system:
-      "You are a menu planning engine. Return strict JSON only. Do not return markdown or chat prose. Use only known UI components: choice_buttons, meal_cards, rule_warning_cards, form_fields, ingredient_chips, schedule_patch, preference_block, next_step_panel. Prefer exactly 3 or 4 meal choices. Every warning must include actionable choices.",
+      `You are a menu planning engine. Return strict JSON only. Do not return markdown or chat prose.
+The root object must exactly follow this contract:
+{
+  "type": "planner_response",
+  "version": 1,
+  "summary": { "machine_label": "string", "user_visible_title": "string" },
+  "ui": [
+    { "component": "meal_cards", "props": { "meals": [] } },
+    { "component": "choice_buttons", "props": { "question": "string", "choices": [] } }
+  ],
+  "warnings": [],
+  "schedule_patch": null,
+  "saved_blocks_suggestions": []
+}
+Use component, never type. Use props, never cards/chips/text at the component top level. choice_buttons.props.choices must be an array of objects, never strings.
+Allowed components: choice_buttons, meal_cards, rule_warning_cards, form_fields, ingredient_chips, schedule_patch, preference_block, next_step_panel.
+For meal_cards, return props.meals with 3 or 4 meals. Each meal must include id, name, description, ingredients, tags, prep_time_minutes, nutrition_estimate, and action.
+Each meal action must be { "type": "select_meal_option", "payload": { "day": "...", "slot": "...", "meal": { ...meal fields without action... } } }.
+Every warning must include actionable choices.`,
     payload: {
       task: "suggest meal options",
       selected_day: day,
       selected_slot: slot,
       active_rules: rules.map((rule) => ({ name: rule.name, severity: rule.severity, scope: rule.scope, text: rule.text })),
       current_plan: plan.plan_json,
-      response_contract: "planner_response version 1",
+      response_contract: {
+        type: "planner_response",
+        version: 1,
+        ui_item_shape: { component: "known_component_name", props: {} },
+        forbidden_ui_item_keys: ["type", "cards", "chips", "text"],
+      },
     },
   };
 }
@@ -364,8 +387,8 @@ export function validatePlannerResponse(candidate, fallback = fallbackSuggestion
   }
 
   const ui = candidate.ui
-    .filter((item) => ALLOWED_COMPONENTS.has(item.component))
-    .map((item) => ({ component: item.component, props: item.props || {} }));
+    .map(normalizeUiComponent)
+    .filter(Boolean);
 
   if (ui.length === 0) return fallback;
 
@@ -378,6 +401,46 @@ export function validatePlannerResponse(candidate, fallback = fallbackSuggestion
     schedule_patch: candidate.schedule_patch || null,
     saved_blocks_suggestions: Array.isArray(candidate.saved_blocks_suggestions) ? candidate.saved_blocks_suggestions : [],
   };
+}
+
+function normalizeUiComponent(item) {
+  if (!item || !ALLOWED_COMPONENTS.has(item.component)) return null;
+  const props = item.props || {};
+
+  if (item.component === "choice_buttons") {
+    const choices = Array.isArray(props.choices)
+      ? props.choices.filter((choice) => choice?.label && choice?.action?.type).slice(0, 4)
+      : [];
+    if (choices.length === 0) return null;
+    return {
+      component: "choice_buttons",
+      props: {
+        question: stringOr(props.question, "Choose an option"),
+        choices,
+      },
+    };
+  }
+
+  if (item.component === "meal_cards") {
+    const meals = Array.isArray(props.meals)
+      ? props.meals.filter((meal) => meal?.name && meal?.action?.type).slice(0, 4)
+      : [];
+    if (meals.length === 0) return null;
+    return { component: "meal_cards", props: { ...props, meals } };
+  }
+
+  if (item.component === "rule_warning_cards") {
+    const warnings = Array.isArray(props.warnings) ? props.warnings.map(normalizeWarning).filter(Boolean) : [];
+    if (warnings.length === 0) return null;
+    return { component: "rule_warning_cards", props: { warnings } };
+  }
+
+  if (item.component === "ingredient_chips") {
+    const ingredients = Array.isArray(props.ingredients) ? props.ingredients.filter((ingredient) => typeof ingredient === "string") : [];
+    return ingredients.length > 0 ? { component: "ingredient_chips", props: { ingredients } } : null;
+  }
+
+  return { component: item.component, props };
 }
 
 function deterministicWarnings(plan, rules) {

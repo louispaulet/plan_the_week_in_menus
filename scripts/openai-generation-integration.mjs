@@ -55,9 +55,17 @@ const suggestionCandidate = await callOpenAI(
   { throwOnError: true },
 );
 
-assert.equal(suggestionCandidate.type, "planner_response");
-assert.equal(suggestionCandidate.version, 1);
+assert.equal(
+  suggestionCandidate.type,
+  "planner_response",
+  `planner response type mismatch; received keys: ${Object.keys(suggestionCandidate).join(", ")}`,
+);
+assert.equal(suggestionCandidate.version, 1, "planner response version must be 1");
 assert.ok(Array.isArray(suggestionCandidate.ui), "planner response must include a ui array");
+assert.ok(
+  suggestionCandidate.ui.every((item) => item.component && !item.type),
+  "raw model UI items must use component/props, not type/cards",
+);
 
 const suggestion = validatePlannerResponse(suggestionCandidate, fallbackSuggestions("wednesday", "dinner"));
 assert.equal(suggestion.type, "planner_response");
@@ -75,6 +83,8 @@ if (mealCards) {
   const meals = mealCards.props.meals || [];
   assert.ok(meals.length >= 2 && meals.length <= 4, "meal_cards should provide 2 to 4 meal options");
   assert.ok(meals.every((meal) => meal.name && meal.action?.type === "select_meal_option"));
+  console.log("Generated meal options:");
+  for (const meal of meals) console.log(`- ${meal.name}`);
 }
 
 if (choiceButtons) {
