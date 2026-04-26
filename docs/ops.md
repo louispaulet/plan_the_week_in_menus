@@ -38,6 +38,14 @@ Set the OpenAI secret on Cloudflare:
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+For local development, paste the key into `.env`:
+
+```bash
+OPENAI_API_KEY=sk-proj-your-local-key
+```
+
+`.env` is ignored by git. Keep `.env.example` committed as the template.
+
 ## D1 Migrations
 
 Create a new migration:
@@ -115,15 +123,15 @@ make test
 Run live OpenAI generation integration tests:
 
 ```bash
-OPENAI_API_KEY="your-key" make test-integration
+make test-integration
 ```
 
-The integration test calls `gpt-5-nano` through the same generation helpers as the Worker, validates JSON mode output, and confirms generated UI uses only whitelisted planner primitives. Do not commit API keys; use environment variables or `wrangler secret put OPENAI_API_KEY`.
+The integration test loads `OPENAI_API_KEY` from `.env` or the current shell, calls `gpt-5-nano` through the same generation helpers as the Worker, validates JSON mode output, and confirms generated UI uses only whitelisted planner primitives. Do not commit API keys; use `.env`, environment variables, or `wrangler secret put OPENAI_API_KEY`.
 
 Run smoke tests plus live integration tests:
 
 ```bash
-OPENAI_API_KEY="your-key" make test-all
+make test-all
 ```
 
 Deploy frontend assets and Worker:

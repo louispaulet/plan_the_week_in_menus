@@ -7,7 +7,7 @@ up:
 	npm run dev
 
 worker:
-	npm run worker
+	set -a; [ ! -f .env ] || . ./.env; set +a; npm run worker
 
 build:
 	npm run build

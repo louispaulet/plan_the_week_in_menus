@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import {
   buildRuleNormalizePrompt,
   buildSuggestionPrompt,
@@ -19,6 +20,8 @@ const allowedComponents = new Set([
   "preference_block",
   "next_step_panel",
 ]);
+
+loadDotEnv();
 
 if (!process.env.OPENAI_API_KEY) {
   console.log("Skipping live OpenAI integration tests: OPENAI_API_KEY is not set.");
@@ -97,3 +100,20 @@ assert.ok(Array.isArray(normalizedRule.tags), "normalized rule must include tags
 assert.equal(typeof normalizedRule.structured, "object", "normalized rule must include structured metadata");
 
 console.log("Live OpenAI generation integration tests passed");
+
+function loadDotEnv() {
+  if (process.env.OPENAI_API_KEY || !existsSync(".env")) return;
+
+  const contents = readFileSync(".env", "utf8");
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const separator = trimmed.indexOf("=");
+    if (separator === -1) continue;
+
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+    if (key && process.env[key] === undefined) process.env[key] = value;
+  }
+}
