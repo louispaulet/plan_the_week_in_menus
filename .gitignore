@@ -227,3 +227,6 @@ pnpm-debug.log*
 # Cloudflare / Vite local state
 .wrangler/
 .vite/
+
+# macOS
+.DS_Store
