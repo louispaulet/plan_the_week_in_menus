@@ -47,6 +47,22 @@ export function plannerReducer(state, action) {
         generatedUi: action.ui,
         warnings: action.warnings,
       };
+    case "updateGeneratedMeal":
+      return {
+        ...state,
+        generatedUi: state.generatedUi.map((item) => {
+          if (item.component !== "meal_cards") return item;
+          return {
+            ...item,
+            props: {
+              ...item.props,
+              meals: (item.props?.meals || []).map((meal) =>
+                meal.id === action.meal.id || meal.name === action.meal.name ? { ...meal, ...action.meal } : meal,
+              ),
+            },
+          };
+        }),
+      };
     case "acceptWarning":
       return {
         ...state,

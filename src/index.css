@@ -179,6 +179,18 @@ select {
     @apply rounded-md border border-ink-600/15 bg-white p-3 text-left transition hover:border-leaf-500;
   }
 
+  .loading-panel {
+    @apply flex items-center gap-2 rounded-md border border-ink-600/15 bg-white p-3 text-sm font-semibold text-ink-600;
+  }
+
+  .loader-dot {
+    @apply h-2.5 w-2.5 animate-pulse rounded-full bg-leaf-500;
+  }
+
+  .failure-mark {
+    @apply text-sm leading-none text-tomato-700;
+  }
+
   .warning-card {
     @apply rounded-md border border-tomato-500/30 bg-tomato-50 p-3;
   }

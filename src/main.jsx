@@ -123,13 +123,33 @@ function App() {
 
   async function handleSuggest(day, slot) {
     dispatch({ type: "selectSlot", selectedSlot: { day, slot } });
-    dispatch({ type: "status", status: "loading", notice: "Preparing options" });
+    dispatch({ type: "generatedUi", ui: [], warnings: state.warnings });
+    dispatch({ type: "status", status: "loading", notice: "Finding meal names" });
     try {
-      const response = await api.suggestOptions(state.planId, { day, slot });
+      const response = await api.suggestNames(state.planId, { day, slot });
       dispatch({ type: "generatedUi", ui: response.ui || [], warnings: response.warnings || [] });
+      dispatch({ type: "status", status: "loading", notice: "Loading meal details" });
+      const meals = (response.ui || []).find((item) => item.component === "meal_cards")?.props?.meals || [];
+      await Promise.allSettled(meals.map((meal) => enrichMealDetails({ day, slot, meal })));
       dispatch({ type: "status", status: "idle", notice: "Options ready" });
     } catch (error) {
-      dispatch({ type: "status", status: "error", notice: error.message });
+      dispatch({ type: "status", status: "error", notice: "⚠️" });
+    }
+  }
+
+  async function enrichMealDetails({ day, slot, meal }) {
+    try {
+      const response = await api.describeMeal(state.planId, { day, slot, meal });
+      dispatch({ type: "updateGeneratedMeal", meal: response.meal });
+    } catch (error) {
+      dispatch({
+        type: "updateGeneratedMeal",
+        meal: {
+          ...meal,
+          description: "⚠️",
+          details_status: "error",
+        },
+      });
     }
   }
 
@@ -211,7 +231,7 @@ function App() {
               <span>Guided choices</span>
               <button className="ghost-button" onClick={handleCheckRules}>Check</button>
             </div>
-            <InterfaceRenderer ui={state.generatedUi} onAction={handleAction} />
+            <InterfaceRenderer ui={state.generatedUi} status={state.status} notice={state.notice} onAction={handleAction} />
           </div>
           <div className="panel-section">
             <div className="section-heading">
@@ -234,4 +254,7 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+const rootElement = document.getElementById("root");
+const root = window.__weekMenuPlannerRoot || createRoot(rootElement);
+window.__weekMenuPlannerRoot = root;
+root.render(<App />);

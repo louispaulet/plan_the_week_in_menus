@@ -40,5 +40,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  suggestNames: (id, payload) =>
+    request(`/api/plans/${id}/suggest-names`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  describeMeal: (id, payload) =>
+    request(`/api/plans/${id}/describe-meal`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   checkRules: (id) => request(`/api/plans/${id}/check-rules`, { method: "POST" }),
 };

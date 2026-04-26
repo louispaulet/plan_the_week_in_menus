@@ -14,7 +14,9 @@ const ALLOWED_COMPONENTS = new Set([
 ]);
 const SEVERITIES = new Set(["hard", "soft", "warning"]);
 const SCOPES = new Set(["global", "day", "meal", "ingredient", "dish", "shopping_list"]);
-const OPENAI_APP_TIMEOUT_MS = 10000;
+const OPENAI_APP_TIMEOUT_MS = 60000;
+const OPENAI_NAME_REQUESTS = 6;
+const OPENAI_NAME_TARGET = 3;
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
@@ -84,6 +86,8 @@ function matchRoute(method, pathname) {
     ["PUT", /^\/api\/plans\/([^/]+)$/, updatePlan],
     ["DELETE", /^\/api\/plans\/([^/]+)$/, deletePlan],
     ["POST", /^\/api\/plans\/([^/]+)\/suggest-options$/, suggestOptions],
+    ["POST", /^\/api\/plans\/([^/]+)\/suggest-names$/, suggestNames],
+    ["POST", /^\/api\/plans\/([^/]+)\/describe-meal$/, describeMeal],
     ["POST", /^\/api\/plans\/([^/]+)\/check-rules$/, checkRules],
     ["GET", /^\/api\/interface-templates$/, listInterfaceTemplates],
   ];
@@ -256,13 +260,12 @@ async function suggestOptions({ request, env, params, requestId }) {
   const day = DAYS.includes(input.day) ? input.day : "monday";
   const slot = SLOTS.includes(input.slot) ? input.slot : "dinner";
   const rules = await loadActiveRules(env, plan.active_rules_json);
-  const fallback = fallbackSuggestions(day, slot, makeId("fallback"));
   logInfo("suggest_options.start", { requestId, planId: plan.id, day, slot, activeRules: rules.length });
-  const candidate = await callOpenAI(env, buildSuggestionPrompt({ plan, rules, day, slot }), fallback, {
-    timeoutMs: OPENAI_APP_TIMEOUT_MS,
-    logContext: { requestId, operation: "suggest_options", planId: plan.id, day, slot },
-  });
-  const response = ensureNewChoicesAction(validatePlannerResponse(candidate, fallback), day, slot);
+  const names = await generateMealNames({ env, plan, rules, day, slot, requestId });
+  const described = await Promise.all(
+    names.map((meal) => generateMealDescription({ env, meal, day, slot, requestId })),
+  );
+  const response = buildMealCardsResponse(described, day, slot, false);
   logInfo("suggest_options.finish", {
     requestId,
     planId: plan.id,
@@ -270,9 +273,53 @@ async function suggestOptions({ request, env, params, requestId }) {
     slot,
     components: response.ui.map((item) => item.component),
     mealNames: extractMealNames(response),
-    usedFallback: candidate === fallback,
+    usedFallback: false,
   });
   return json(response);
+}
+
+async function suggestNames({ request, env, params, requestId }) {
+  const input = await readJson(request);
+  const plan = await loadPlan(env, params[0]);
+  const day = DAYS.includes(input.day) ? input.day : "monday";
+  const slot = SLOTS.includes(input.slot) ? input.slot : "dinner";
+  const rules = await loadActiveRules(env, plan.active_rules_json);
+  logInfo("suggest_names.start", { requestId, planId: plan.id, day, slot, activeRules: rules.length });
+
+  try {
+    const names = await generateMealNames({ env, plan, rules, day, slot, requestId });
+    const response = buildMealCardsResponse(names, day, slot, true);
+    logInfo("suggest_names.finish", {
+      requestId,
+      planId: plan.id,
+      day,
+      slot,
+      mealNames: names.map((meal) => meal.name),
+      durationBudgetMs: OPENAI_APP_TIMEOUT_MS,
+    });
+    return json(response);
+  } catch (error) {
+    logWarn("suggest_names.failed", { requestId, planId: plan.id, day, slot, message: error.message });
+    return json({ error: "⚠️" }, 504);
+  }
+}
+
+async function describeMeal({ request, env, params, requestId }) {
+  const input = await readJson(request);
+  const plan = await loadPlan(env, params[0]);
+  const day = DAYS.includes(input.day) ? input.day : "monday";
+  const slot = SLOTS.includes(input.slot) ? input.slot : "dinner";
+  const meal = input.meal || {};
+  if (!meal.name) return json({ error: "Meal name is required" }, 400);
+
+  try {
+    const described = await generateMealDescription({ env, meal, day, slot, requestId });
+    logInfo("describe_meal.finish", { requestId, planId: plan.id, day, slot, mealName: described.name });
+    return json({ meal: described });
+  } catch (error) {
+    logWarn("describe_meal.failed", { requestId, planId: plan.id, day, slot, mealName: meal.name, message: error.message });
+    return json({ error: "⚠️" }, 504);
+  }
 }
 
 async function checkRules({ env, params }) {
@@ -401,6 +448,130 @@ export async function callOpenAI(env, prompt, fallback, options = {}) {
   }
 }
 
+async function generateMealNames({ env, plan, rules, day, slot, requestId }) {
+  const pending = Array.from({ length: OPENAI_NAME_REQUESTS }, (_, index) => (
+    callOpenAI(
+      env,
+      buildMealNamePrompt({ plan, rules, day, slot, index: index + 1 }),
+      null,
+      {
+        timeoutMs: OPENAI_APP_TIMEOUT_MS,
+        throwOnError: true,
+        logContext: { requestId, operation: "meal_name", day, slot, index: index + 1 },
+      },
+    )
+      .then((payload) => ({ payload, index: index + 1 }))
+      .catch((error) => ({ error, index: index + 1 }))
+  ));
+
+  const meals = [];
+  const seenNames = new Set();
+  let remaining = pending;
+
+  while (remaining.length > 0 && meals.length < OPENAI_NAME_TARGET) {
+    const settled = await Promise.race(remaining.map((promise, index) => promise.then((result) => ({ ...result, promiseIndex: index }))));
+    remaining = remaining.filter((_, index) => index !== settled.promiseIndex);
+
+    if (settled.error) {
+      logWarn("meal_name.error", { requestId, day, slot, index: settled.index, message: settled.error.message });
+      continue;
+    }
+
+    const name = typeof settled.payload?.meal_name === "string" ? settled.payload.meal_name.trim() : "";
+    const normalized = name.toLowerCase();
+    if (!name || seenNames.has(normalized)) continue;
+
+    seenNames.add(normalized);
+    meals.push({
+      id: `generated_${day}_${slot}_${slugify(name)}_${makeId("meal")}`,
+      name,
+      description: "Loading details...",
+      ingredients: [],
+      tags: Array.isArray(settled.payload.tags) ? settled.payload.tags.slice(0, 4) : [],
+      prep_time_minutes: null,
+      nutrition_estimate: {},
+      details_status: "loading",
+    });
+    logInfo("meal_name.accepted", { requestId, day, slot, index: settled.index, name, count: meals.length });
+  }
+
+  if (meals.length < OPENAI_NAME_TARGET) {
+    throw new Error(`Only received ${meals.length} valid meal names`);
+  }
+
+  return meals;
+}
+
+async function generateMealDescription({ env, meal, day, slot, requestId }) {
+  const payload = await callOpenAI(
+    env,
+    buildMealDescriptionPrompt({ meal, day, slot }),
+    null,
+    {
+      timeoutMs: OPENAI_APP_TIMEOUT_MS,
+      throwOnError: true,
+      logContext: { requestId, operation: "meal_description", day, slot, mealName: meal.name },
+    },
+  );
+
+  if (!payload?.description || !Array.isArray(payload.ingredients)) {
+    throw new Error("Invalid meal description response");
+  }
+
+  const described = {
+    ...meal,
+    description: payload.description,
+    ingredients: payload.ingredients.slice(0, 8),
+    tags: Array.isArray(payload.tags) ? payload.tags.slice(0, 5) : meal.tags || [],
+    prep_time_minutes: Number(payload.prep_time_minutes) || 25,
+    nutrition_estimate: typeof payload.nutrition_estimate === "object" && payload.nutrition_estimate ? payload.nutrition_estimate : meal.nutrition_estimate || {},
+    details_status: "ready",
+  };
+
+  return {
+    ...described,
+    action: { type: "select_meal_option", payload: { day, slot, meal: described } },
+  };
+}
+
+function buildMealCardsResponse(meals, day, slot, detailsLoading) {
+  const cards = meals.map((meal) => {
+    const card = {
+      ...meal,
+      details_status: detailsLoading ? "loading" : meal.details_status || "ready",
+    };
+    return {
+      ...card,
+      action: {
+        type: "select_meal_option",
+        payload: { day, slot, meal: card },
+      },
+    };
+  });
+
+  return {
+    type: "planner_response",
+    version: 1,
+    summary: { machine_label: "parallel_meal_options", user_visible_title: "Choose a meal" },
+    ui: [
+      { component: "meal_cards", props: { meals: cards } },
+      {
+        component: "choice_buttons",
+        props: {
+          question: "Need a different direction?",
+          choices: [
+            { label: "Show new choices", action: { type: "suggest_options", payload: { day, slot } } },
+            { label: "Check rules first", action: { type: "check_rules", payload: {} } },
+          ],
+        },
+      },
+    ],
+    warnings: [],
+    schedule_patch: null,
+    saved_blocks_suggestions: [],
+  };
+}
+
 function extractMealNames(response) {
   return response.ui
     .filter((item) => item.component === "meal_cards")
@@ -446,6 +617,35 @@ Every warning must include actionable choices.`,
         ui_item_shape: { component: "known_component_name", props: {} },
         forbidden_ui_item_keys: ["type", "cards", "chips", "text"],
       },
+    },
+  };
+}
+
+export function buildMealNamePrompt({ plan, rules, day, slot, index }) {
+  return {
+    system:
+      'Return strict JSON only. Return exactly this shape: {"meal_name":"string","tags":["string"]}. Do not include descriptions, ingredients, markdown, or extra keys.',
+    payload: {
+      task: "suggest one distinct meal name",
+      option_index: index,
+      selected_day: day,
+      selected_slot: slot,
+      active_rules: rules.map((rule) => ({ name: rule.name, severity: rule.severity, scope: rule.scope, text: rule.text })),
+      current_plan: plan.plan_json,
+    },
+  };
+}
+
+export function buildMealDescriptionPrompt({ meal, day, slot }) {
+  return {
+    system:
+      'Return strict JSON only. Return exactly this shape: {"meal_name":"string","description":"string","ingredients":["string"],"tags":["string"],"prep_time_minutes":25,"nutrition_estimate":{"fruit_veg_servings":2}}. Keep description under 24 words.',
+    payload: {
+      task: "describe meal card",
+      selected_day: day,
+      selected_slot: slot,
+      meal_name: meal.name,
+      existing_tags: meal.tags || [],
     },
   };
 }
@@ -853,6 +1053,14 @@ function json(payload, status = 200) {
 
 function stringOr(value, fallback) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function slugify(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48) || "meal";
 }
 
 function makeId(prefix) {

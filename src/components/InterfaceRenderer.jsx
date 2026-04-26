@@ -2,13 +2,30 @@ import { ChoiceButtons } from "./ChoiceButtons.jsx";
 import { MealOptionCard } from "./MealOptionCard.jsx";
 import { WarningCard } from "./WarningCard.jsx";
 
-export function InterfaceRenderer({ ui, onAction }) {
+export function InterfaceRenderer({ ui, status, notice, onAction }) {
   if (!ui || ui.length === 0) {
+    if (status === "loading") {
+      return (
+        <div className="loading-panel" aria-live="polite">
+          <span className="loader-dot" />
+          <span>{notice || "Loading"}</span>
+        </div>
+      );
+    }
+    if (status === "error") {
+      return <p className="failure-mark" aria-label="Recommendation failed">⚠️</p>;
+    }
     return <p className="muted">Pick an empty slot to get structured meal options.</p>;
   }
 
   return (
     <div className="stack">
+      {status === "loading" && (
+        <div className="loading-panel" aria-live="polite">
+          <span className="loader-dot" />
+          <span>{notice || "Loading"}</span>
+        </div>
+      )}
       {ui.map((item, index) => {
         if (item.component === "choice_buttons") {
           return <ChoiceButtons key={index} props={item.props} onAction={onAction} />;
