@@ -1,0 +1,30 @@
+{
+  "name": "week-menu-planner",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "worker": "wrangler dev worker.js --local --port 8787",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node scripts/smoke-test.mjs",
+    "deploy": "npm run build && wrangler deploy",
+    "db:create": "wrangler d1 create week-menu-planner",
+    "db:migrate:local": "wrangler d1 migrations apply week-menu-planner --local",
+    "db:migrate:remote": "wrangler d1 migrations apply week-menu-planner --remote",
+    "status": "git status --short --branch"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "vite": "^7.2.7",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "wrangler": "^4.55.0"
+  }
+}
