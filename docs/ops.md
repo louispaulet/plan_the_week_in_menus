@@ -165,10 +165,19 @@ Deploy frontend assets and Worker:
 make deploy
 ```
 
+`make deploy` publishes the Vite frontend to GitHub Pages through the `gh-pages` branch.
+
 Equivalent raw command:
 
 ```bash
-npm run build && npx wrangler deploy
+GITHUB_PAGES=true npm run build
+node scripts/deploy-gh-pages.mjs
+```
+
+Deploy the Cloudflare Worker separately:
+
+```bash
+npm run deploy:cloudflare
 ```
 
 Check git status:

@@ -227,6 +227,7 @@ pnpm-debug.log*
 # Cloudflare / Vite local state
 .wrangler/
 .vite/
+.gh-pages-worktree/
 
 # macOS
 .DS_Store
