@@ -14,6 +14,7 @@ const ALLOWED_COMPONENTS = new Set([
 ]);
 const SEVERITIES = new Set(["hard", "soft", "warning"]);
 const SCOPES = new Set(["global", "day", "meal", "ingredient", "dish", "shopping_list"]);
+const OPENAI_APP_TIMEOUT_MS = 10000;
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
@@ -25,17 +26,40 @@ export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     const url = new URL(request.url);
+    const requestId = makeId("req");
+    const startedAt = Date.now();
 
     try {
       if (!url.pathname.startsWith("/api/")) {
+        logInfo("request.not_found", { requestId, method: request.method, path: url.pathname });
         return json({ error: "Not found" }, 404);
       }
 
       const route = matchRoute(request.method, url.pathname);
-      if (!route) return json({ error: "Not found" }, 404);
+      if (!route) {
+        logInfo("request.route_missing", { requestId, method: request.method, path: url.pathname });
+        return json({ error: "Not found" }, 404);
+      }
 
-      return await route.handler({ request, env, params: route.params });
+      logInfo("request.start", { requestId, method: request.method, path: url.pathname, route: route.handler.name });
+      const response = await route.handler({ request, env, params: route.params, requestId });
+      logInfo("request.finish", {
+        requestId,
+        method: request.method,
+        path: url.pathname,
+        route: route.handler.name,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return response;
     } catch (error) {
+      logError("request.error", {
+        requestId,
+        method: request.method,
+        path: url.pathname,
+        durationMs: Date.now() - startedAt,
+        message: error.message,
+      });
       return json({ error: error.message || "Unexpected server error" }, 500);
     }
   },
@@ -133,11 +157,14 @@ async function deleteRule({ env, params }) {
   return json({ ok: true });
 }
 
-async function normalizeRule({ request, env }) {
+async function normalizeRule({ request, env, requestId }) {
   const { text } = await readJson(request);
   if (!text || typeof text !== "string") return json({ error: "Rule text is required" }, 400);
   const fallback = fallbackNormalizedRule(text);
-  const response = await callOpenAI(env, buildRuleNormalizePrompt(text), fallback);
+  const response = await callOpenAI(env, buildRuleNormalizePrompt(text), fallback, {
+    timeoutMs: OPENAI_APP_TIMEOUT_MS,
+    logContext: { requestId, operation: "normalize_rule" },
+  });
   return json({
     name: stringOr(response.name, fallback.name),
     severity: SEVERITIES.has(response.severity) ? response.severity : fallback.severity,
@@ -223,15 +250,29 @@ async function deletePlan({ env, params }) {
   return json({ ok: true });
 }
 
-async function suggestOptions({ request, env, params }) {
+async function suggestOptions({ request, env, params, requestId }) {
   const input = await readJson(request);
   const plan = await loadPlan(env, params[0]);
   const day = DAYS.includes(input.day) ? input.day : "monday";
   const slot = SLOTS.includes(input.slot) ? input.slot : "dinner";
   const rules = await loadActiveRules(env, plan.active_rules_json);
-  const fallback = fallbackSuggestions(day, slot);
-  const candidate = await callOpenAI(env, buildSuggestionPrompt({ plan, rules, day, slot }), fallback);
-  return json(validatePlannerResponse(candidate, fallback));
+  const fallback = fallbackSuggestions(day, slot, makeId("fallback"));
+  logInfo("suggest_options.start", { requestId, planId: plan.id, day, slot, activeRules: rules.length });
+  const candidate = await callOpenAI(env, buildSuggestionPrompt({ plan, rules, day, slot }), fallback, {
+    timeoutMs: OPENAI_APP_TIMEOUT_MS,
+    logContext: { requestId, operation: "suggest_options", planId: plan.id, day, slot },
+  });
+  const response = ensureNewChoicesAction(validatePlannerResponse(candidate, fallback), day, slot);
+  logInfo("suggest_options.finish", {
+    requestId,
+    planId: plan.id,
+    day,
+    slot,
+    components: response.ui.map((item) => item.component),
+    mealNames: extractMealNames(response),
+    usedFallback: candidate === fallback,
+  });
+  return json(response);
 }
 
 async function checkRules({ env, params }) {
@@ -296,11 +337,18 @@ async function replaceWarnings(env, planId, warnings) {
 }
 
 export async function callOpenAI(env, prompt, fallback, options = {}) {
+  const context = options.logContext || {};
   if (!env.OPENAI_API_KEY) {
+    logWarn("openai.skip_no_key", context);
     if (options.throwOnError) throw new Error("OPENAI_API_KEY is required");
     return fallback;
   }
+  let timeout;
+  const startedAt = Date.now();
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), options.timeoutMs || 30000);
+    logInfo("openai.start", { ...context, model: MODEL, timeoutMs: options.timeoutMs || 30000 });
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -315,20 +363,49 @@ export async function callOpenAI(env, prompt, fallback, options = {}) {
         ],
         text: { format: { type: "json_object" } },
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
+    logInfo("openai.http_response", { ...context, status: response.status, durationMs: Date.now() - startedAt });
     if (!response.ok) {
       const errorText = await response.text();
+      logWarn("openai.non_ok_fallback", { ...context, status: response.status, bodyPreview: errorText.slice(0, 240) });
       if (options.throwOnError) throw new Error(`OpenAI request failed: ${response.status} ${errorText}`);
       return fallback;
     }
     const data = await response.json();
     const text = extractOutputText(data);
     if (!text && options.throwOnError) throw new Error("OpenAI response did not include output text");
-    return text ? JSON.parse(text) : fallback;
+    if (!text) {
+      logWarn("openai.empty_output_fallback", context);
+      return fallback;
+    }
+    const parsed = JSON.parse(text);
+    logInfo("openai.parsed", {
+      ...context,
+      durationMs: Date.now() - startedAt,
+      outputKeys: typeof parsed === "object" && parsed ? Object.keys(parsed) : [],
+    });
+    return parsed;
   } catch (error) {
+    logWarn("openai.error_fallback", {
+      ...context,
+      durationMs: Date.now() - startedAt,
+      name: error.name,
+      message: error.message,
+    });
     if (options.throwOnError) throw error;
     return fallback;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
+}
+
+function extractMealNames(response) {
+  return response.ui
+    .filter((item) => item.component === "meal_cards")
+    .flatMap((item) => item.props.meals || [])
+    .map((meal) => meal.name);
 }
 
 function extractOutputText(data) {
@@ -400,6 +477,28 @@ export function validatePlannerResponse(candidate, fallback = fallbackSuggestion
     warnings: Array.isArray(candidate.warnings) ? candidate.warnings.map(normalizeWarning).filter(Boolean) : [],
     schedule_patch: candidate.schedule_patch || null,
     saved_blocks_suggestions: Array.isArray(candidate.saved_blocks_suggestions) ? candidate.saved_blocks_suggestions : [],
+  };
+}
+
+function ensureNewChoicesAction(response, day, slot) {
+  const hasChoiceButtons = response.ui.some((item) => item.component === "choice_buttons");
+  if (hasChoiceButtons) return response;
+
+  return {
+    ...response,
+    ui: [
+      ...response.ui,
+      {
+        component: "choice_buttons",
+        props: {
+          question: "Need a different set?",
+          choices: [
+            { label: "Show new choices", action: { type: "suggest_options", payload: { day, slot } } },
+            { label: "Check rules", action: { type: "check_rules", payload: {} } },
+          ],
+        },
+      },
+    ],
   };
 }
 
@@ -488,8 +587,8 @@ function makeWarning(rule, day, slot, title, message) {
   };
 }
 
-export function fallbackSuggestions(day, slot) {
-  const meals = [
+export function fallbackSuggestions(day, slot, seed = "default") {
+  const pool = [
     {
       id: `generated_${day}_${slot}_salmon`,
       name: "Air fryer salmon with green beans",
@@ -517,10 +616,94 @@ export function fallbackSuggestions(day, slot) {
       prep_time_minutes: 18,
       nutrition_estimate: { fruit_veg_servings: 2 },
     },
-  ].map((meal) => ({
+    {
+      id: `generated_${day}_${slot}_turkey_wraps`,
+      name: "Turkey lettuce wraps",
+      description: "Crisp lettuce cups with turkey, cucumber, herbs and a yogurt sauce.",
+      ingredients: ["turkey", "lettuce", "cucumber", "yogurt"],
+      tags: ["low_carb", "fast"],
+      prep_time_minutes: 22,
+      nutrition_estimate: { fruit_veg_servings: 2 },
+    },
+    {
+      id: `generated_${day}_${slot}_tofu`,
+      name: "Crispy tofu and broccoli bowl",
+      description: "Golden tofu with broccoli, sesame, ginger and a bright crunchy slaw.",
+      ingredients: ["tofu", "broccoli", "cabbage", "ginger"],
+      tags: ["vegetarian", "budget"],
+      prep_time_minutes: 30,
+      nutrition_estimate: { fruit_veg_servings: 3 },
+    },
+    {
+      id: `generated_${day}_${slot}_pork`,
+      name: "Pork tenderloin with cabbage skillet",
+      description: "Lean pork slices with cabbage, apple, mustard and a quick pan sauce.",
+      ingredients: ["pork tenderloin", "cabbage", "apple", "mustard"],
+      tags: ["one_pan", "high_protein"],
+      prep_time_minutes: 32,
+      nutrition_estimate: { fruit_veg_servings: 2 },
+    },
+    {
+      id: `generated_${day}_${slot}_lentil`,
+      name: "Warm lentil and roasted carrot salad",
+      description: "A filling salad with lentils, roasted carrots, greens and lemon dressing.",
+      ingredients: ["lentils", "carrots", "arugula", "lemon"],
+      tags: ["vegetarian", "make_ahead"],
+      prep_time_minutes: 35,
+      nutrition_estimate: { fruit_veg_servings: 3 },
+    },
+    {
+      id: `generated_${day}_${slot}_shrimp`,
+      name: "Garlic shrimp zucchini noodles",
+      description: "Shrimp tossed with zucchini noodles, garlic, parsley and lemon.",
+      ingredients: ["shrimp", "zucchini", "garlic", "lemon"],
+      tags: ["low_carb", "fast"],
+      prep_time_minutes: 18,
+      nutrition_estimate: { fruit_veg_servings: 2 },
+    },
+    {
+      id: `generated_${day}_${slot}_frittata`,
+      name: "Spinach feta frittata",
+      description: "A simple baked egg dish with spinach, feta and a tomato cucumber side.",
+      ingredients: ["eggs", "spinach", "feta", "tomato"],
+      tags: ["vegetarian", "budget"],
+      prep_time_minutes: 28,
+      nutrition_estimate: { fruit_veg_servings: 3 },
+    },
+    {
+      id: `generated_${day}_${slot}_beef`,
+      name: "Beef and pepper stir-fry",
+      description: "Thin beef strips with peppers, mushrooms and cauliflower rice.",
+      ingredients: ["beef", "peppers", "mushrooms", "cauliflower rice"],
+      tags: ["low_carb", "quick"],
+      prep_time_minutes: 26,
+      nutrition_estimate: { fruit_veg_servings: 3 },
+    },
+    {
+      id: `generated_${day}_${slot}_halloumi`,
+      name: "Halloumi cucumber tomato plates",
+      description: "Seared halloumi with cucumber, tomato, herbs and chickpea salad.",
+      ingredients: ["halloumi", "cucumber", "tomato", "chickpeas"],
+      tags: ["vegetarian", "no_oven"],
+      prep_time_minutes: 20,
+      nutrition_estimate: { fruit_veg_servings: 3 },
+    },
+  ];
+  const start = hashSeed(seed) % pool.length;
+  const meals = Array.from({ length: 3 }, (_, index) => pool[(start + index * 3) % pool.length]).map((meal) => ({
     ...meal,
-    action: { type: "select_meal_option", payload: { day, slot, meal } },
+    id: `${meal.id}_${hashSeed(seed)}`,
+    action: { type: "select_meal_option", payload: { day, slot, meal: { ...meal, id: `${meal.id}_${hashSeed(seed)}` } } },
   }));
+
+  if (meals.length < 4) {
+    const extra = pool[(start + 1) % pool.length];
+    meals.push({
+      ...extra,
+      id: `${extra.id}_${hashSeed(seed)}_extra`,
+      action: { type: "select_meal_option", payload: { day, slot, meal: { ...extra, id: `${extra.id}_${hashSeed(seed)}_extra` } } },
+    });
+  }
 
   return {
     type: "planner_response",
@@ -536,7 +719,7 @@ export function fallbackSuggestions(day, slot) {
         props: {
           question: "Need a different direction?",
           choices: [
-            { label: "Show another set", action: { type: "suggest_options", payload: { day, slot } } },
+            { label: "Show new choices", action: { type: "suggest_options", payload: { day, slot } } },
             { label: "Check rules first", action: { type: "check_rules", payload: {} } },
           ],
         },
@@ -546,6 +729,10 @@ export function fallbackSuggestions(day, slot) {
     schedule_patch: null,
     saved_blocks_suggestions: [],
   };
+}
+
+function hashSeed(seed) {
+  return String(seed).split("").reduce((total, char) => (total * 31 + char.charCodeAt(0)) >>> 0, 7);
 }
 
 export function fallbackNormalizedRule(text) {
@@ -678,4 +865,16 @@ function timestamp() {
 
 function today() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function logInfo(event, details = {}) {
+  console.log(JSON.stringify({ level: "info", event, ...details }));
+}
+
+function logWarn(event, details = {}) {
+  console.warn(JSON.stringify({ level: "warn", event, ...details }));
+}
+
+function logError(event, details = {}) {
+  console.error(JSON.stringify({ level: "error", event, ...details }));
 }

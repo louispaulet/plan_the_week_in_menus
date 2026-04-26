@@ -52,7 +52,7 @@ const suggestionCandidate = await callOpenAI(
   env,
   buildSuggestionPrompt({ plan, rules, day: "wednesday", slot: "dinner" }),
   fallbackSuggestions("wednesday", "dinner"),
-  { throwOnError: true },
+  { throwOnError: true, timeoutMs: 90000 },
 );
 
 assert.equal(
@@ -97,7 +97,7 @@ const normalizedRule = await callOpenAI(
   env,
   buildRuleNormalizePrompt("Avoid bell peppers. Prefer air fryer compatible meals on work nights."),
   fallbackNormalizedRule("Avoid bell peppers. Prefer air fryer compatible meals on work nights."),
-  { throwOnError: true },
+  { throwOnError: true, timeoutMs: 90000 },
 );
 
 assert.ok(normalizedRule.name, "normalized rule must include a name");

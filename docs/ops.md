@@ -128,6 +128,14 @@ make test-integration
 
 The integration test loads `OPENAI_API_KEY` from `.env` or the current shell, calls `gpt-5-nano` through the same generation helpers as the Worker, validates JSON mode output, and confirms generated UI uses only whitelisted planner primitives. Do not commit API keys; use `.env`, environment variables, or `wrangler secret put OPENAI_API_KEY`.
 
+Run a tiny Python-only OpenAI sanity check:
+
+```bash
+make api-toy-check
+```
+
+This reads `OPENAI_API_KEY` from `.env`, calls the Responses API with a toy JSON-mode prompt, and prints duration plus a single recipe name. Use this when you want to separate key/API syntax issues from Worker, D1, or frontend behavior.
+
 Run smoke tests plus live integration tests:
 
 ```bash

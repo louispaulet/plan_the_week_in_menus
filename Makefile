@@ -1,4 +1,4 @@
-.PHONY: install up worker build test test-integration test-all db-create db-migrate-local db-migrate-remote deploy status
+.PHONY: install up worker build test test-integration test-all api-toy-check db-create db-migrate-local db-migrate-remote deploy status
 
 install:
 	npm install
@@ -20,6 +20,9 @@ test-integration:
 
 test-all:
 	npm run test:all
+
+api-toy-check:
+	python3 scripts/openai_toy_check.py
 
 db-create:
 	npm run db:create
