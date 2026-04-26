@@ -106,6 +106,15 @@ make worker
 
 The Vite dev server proxies `/api` calls to the local Worker at `http://127.0.0.1:8787`.
 
+If Wrangler reports local D1 SQLite lock errors, stop duplicate local Worker processes and start again:
+
+```bash
+make worker-clean
+make worker
+```
+
+Do not answer yes to Wrangler crash-report prompts unless you intentionally want to send local diagnostic output to Cloudflare.
+
 ## Build, Test, Deploy
 
 Build the frontend:

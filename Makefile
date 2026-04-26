@@ -1,4 +1,4 @@
-.PHONY: install up worker build test test-integration test-all api-toy-check api-parallel-probe db-create db-migrate-local db-migrate-remote deploy status
+.PHONY: install up worker worker-clean build test test-integration test-all api-toy-check api-parallel-probe db-create db-migrate-local db-migrate-remote deploy status
 
 install:
 	npm install
@@ -8,6 +8,11 @@ up:
 
 worker:
 	set -a; [ ! -f .env ] || . ./.env; set +a; npm run worker
+
+worker-clean:
+	lsof -tiTCP:8787 -sTCP:LISTEN | xargs -r kill
+	pkill -f "wrangler dev worker.js --local --port 8787" || true
+	pkill -f "workerd.*localhost:8787" || true
 
 build:
 	npm run build
