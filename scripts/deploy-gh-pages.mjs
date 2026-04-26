@@ -9,11 +9,12 @@ const worktreeDir = path.join(repoRoot, ".gh-pages-worktree");
 const branch = "gh-pages";
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const output = execFileSync(command, args, {
     cwd: options.cwd || repoRoot,
     encoding: "utf8",
     stdio: options.stdio || "pipe",
-  }).trim();
+  });
+  return typeof output === "string" ? output.trim() : "";
 }
 
 function tryRun(command, args, options = {}) {
